@@ -42,11 +42,9 @@ namespace Duplicati.Library.Backend
         {
             AmazonS3Config cfg = new AmazonS3Config();
             
-            cfg.CommunicationProtocol = useSSL ? Amazon.S3.Model.Protocol.HTTPS : Amazon.S3.Model.Protocol.HTTP;
-            cfg.ServiceURL = servername;
-            cfg.UserAgent = "Duplicati v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString() + " S3 client with AWS SDK v" + cfg.GetType().Assembly.GetName().Version.ToString();
-            cfg.UseSecureStringForAwsSecretKey = false;
+            cfg.ServiceURL = "https://s3.amazonaws.com";
             cfg.BufferSize = (int)Duplicati.Library.Utility.Utility.DEFAULT_BUFFER_SIZE;
+            cfg.Timeout = TimeSpan.FromSeconds(60);
 
             m_client = new Amazon.S3.AmazonS3Client(awsID, awsKey, cfg);
 
@@ -62,8 +60,6 @@ namespace Duplicati.Library.Backend
             if (!string.IsNullOrEmpty(m_locationConstraint))
                 request.BucketRegionName = m_locationConstraint;
 
-            using (PutBucketResponse response = m_client.PutBucket(request))
-            { }
         }
 
         public virtual void GetFileStream(string bucketName, string keyName, System.IO.Stream target)
@@ -71,8 +67,6 @@ namespace Duplicati.Library.Backend
             GetObjectRequest objectGetRequest = new GetObjectRequest();
             objectGetRequest.BucketName = bucketName;
             objectGetRequest.Key = keyName;
-            objectGetRequest.Timeout = System.Threading.Timeout.Infinite;
-            objectGetRequest.ReadWriteTimeout = (int)TimeSpan.FromMinutes(1).TotalMilliseconds;
             
             using (GetObjectResponse objectGetResponse = m_client.GetObject(objectGetRequest))
             using (System.IO.Stream s = objectGetResponse.ResponseStream)
@@ -98,12 +92,8 @@ namespace Duplicati.Library.Backend
             objectAddRequest.Key = keyName;
             objectAddRequest.InputStream = source;
             objectAddRequest.StorageClass = m_useRRS ? S3StorageClass.ReducedRedundancy : S3StorageClass.Standard;
-            objectAddRequest.GenerateMD5Digest = false; //We would like this, but cannot read the stream twice :(
-            objectAddRequest.Timeout = System.Threading.Timeout.Infinite;
-            objectAddRequest.ReadWriteTimeout = (int)TimeSpan.FromMinutes(1).TotalMilliseconds;
 
-            using (PutObjectResponse objectAddResponse = m_client.PutObject(objectAddRequest))
-            { }
+            PutObjectResponse objectAddResponse = m_client.PutObject(objectAddRequest);
         }
 
         public void DeleteObject(string bucketName, string keyName)
@@ -112,8 +102,7 @@ namespace Duplicati.Library.Backend
             objectDeleteRequest.BucketName = bucketName;
             objectDeleteRequest.Key = keyName;
 
-            using (DeleteObjectResponse objectDeleteResponse = m_client.DeleteObject(objectDeleteRequest))
-            { }
+            DeleteObjectResponse objectDeleteResponse = m_client.DeleteObject(objectDeleteRequest);
         }
 
         public virtual List<IFileEntry> ListBucket(string bucketName, string prefix)
@@ -136,31 +125,29 @@ namespace Duplicati.Library.Backend
                 if (!string.IsNullOrEmpty(prefix))
                     listRequest.Prefix = prefix;
 
-                using (ListObjectsResponse listResponse = m_client.ListObjects(listRequest))
+                ListObjectsResponse listResponse = m_client.ListObjects(listRequest);
+                isTruncated = listResponse.IsTruncated;
+                filename = listResponse.NextMarker;
+
+                foreach (S3Object obj in listResponse.S3Objects)
                 {
-                    isTruncated = listResponse.IsTruncated;
-                    filename = listResponse.NextMarker;
+                    DateTime dt;
+                    if (obj.LastModified != null)
+                        files.Add(new FileEntry(
+                            obj.Key,
+                            obj.Size,
+                            obj.LastModified,
+                            obj.LastModified
+                        ));
+                    else
+                        files.Add(new FileEntry(
+                            obj.Key,
+                            obj.Size
+                        ));
 
-                    foreach (S3Object obj in listResponse.S3Objects)
-                    {
-                        DateTime dt;
-                        if (DateTime.TryParse(obj.LastModified, out dt))
-                            files.Add(new FileEntry(
-                                obj.Key,
-                                obj.Size,
-                                dt,
-                                dt
-                            ));
-                        else
-                            files.Add(new FileEntry(
-                                obj.Key,
-                                obj.Size
-                            ));
-
-                    }
-
-                    //filename = files[files.Count - 1].Name;
                 }
+
+                //filename = files[files.Count - 1].Name;
             }
 
             //TODO: Figure out if this is the case with AWSSDK too
